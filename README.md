@@ -57,7 +57,7 @@ This structure was chosen because it makes individual components testable in iso
 - Python 3.8+
 - PyYAML (`pip install pyyaml`)
 - Linux (tested on Fedora 42; should work on any standard distro)
-- No root access required
+- No root access required(some monitored commands may require sudo)
 
 ---
 
