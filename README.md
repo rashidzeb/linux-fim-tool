@@ -26,7 +26,7 @@ Beyond file system paths, the tool can also monitor the output of arbitrary shel
 
 **On-demand scanning, not a real-time daemon** — event-driven monitoring with inotify or similar requires persistent processes and tends to generate noise under normal server activity. On-demand scanning is predictable, schedulable via cron, and doesn't sit in memory between runs. The trade-off is intentional.
 
-**User space only, no root required** — kernel-level hooks offer stronger guarantees but they also mean you're modifying the OS to monitor the OS, which introduces its own risks. Everything here runs as a normal user process.
+**User space only, Runs as a normal user; some monitored commands may require sudo** — kernel-level hooks offer stronger guarantees but they also mean you're modifying the OS to monitor the OS, which introduces its own risks. Everything here runs as a normal user process.
 
 **Atomic writes for baseline files** — baselines are written via a temp file and `os.replace()` to prevent partial writes corrupting the stored state. The baseline file also gets a separate SHA-256 hash file so the tool can verify its own reference data hasn't been tampered with before running a scan.
 
