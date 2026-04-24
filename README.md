@@ -1,5 +1,4 @@
 # linux-fim-tool
-User-space FIM tool for Linux web servers — SHA-256 baseline hashing, command output monitoring, and tamper-evident logs. Lighter than Tripwire and OSSEC. Root-free by design; system-level monitored commands may need sudo.
 
 A lightweight, user-space file integrity monitoring tool for Linux web servers, built as part of MSc Computing research at Bangor University.
 
@@ -26,7 +25,7 @@ Beyond file system paths, the tool can also monitor the output of arbitrary shel
 
 **On-demand scanning, not a real-time daemon** — event-driven monitoring with inotify or similar requires persistent processes and tends to generate noise under normal server activity. On-demand scanning is predictable, schedulable via cron, and doesn't sit in memory between runs. The trade-off is intentional.
 
-**User space only, Runs as a normal user; some monitored commands may require sudo** — kernel-level hooks offer stronger guarantees but they also mean you're modifying the OS to monitor the OS, which introduces its own risks. Everything here runs as a normal user process.
+**User space only, no root required** — kernel-level hooks offer stronger guarantees but they also mean you're modifying the OS to monitor the OS, which introduces its own risks. Everything here runs as a normal user process.
 
 **Atomic writes for baseline files** — baselines are written via a temp file and `os.replace()` to prevent partial writes corrupting the stored state. The baseline file also gets a separate SHA-256 hash file so the tool can verify its own reference data hasn't been tampered with before running a scan.
 
@@ -57,7 +56,7 @@ This structure was chosen because it makes individual components testable in iso
 - Python 3.8+
 - PyYAML (`pip install pyyaml`)
 - Linux (tested on Fedora 42; should work on any standard distro)
-- No root access required(some monitored commands may require sudo)
+- No root access required
 
 ---
 
