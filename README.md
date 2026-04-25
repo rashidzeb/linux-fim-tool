@@ -1,60 +1,62 @@
 # linux-fim-tool
 
-A lightweight file integrity monitoring tool for Linux web servers. Built in Python, runs entirely in user space, no root needed for the tool itself.
+A lightweight, user-space file integrity monitoring tool for Linux web servers, written in Python. No root required for the tool itself, no daemons, no kernel modules.
 
-This started as my MSc individual project at Bangor University and grew into something I think is actually useful for anyone running a small Linux server who doesn't want the overhead of Tripwire or OSSEC.
+This started as my MSc individual project at Bangor University and turned into something I think is genuinely useful beyond the academic context. The motivation was simple: existing FIM tools like Tripwire and OSSEC are powerful but carry a lot of operational weight that doesn't make sense for smaller deployments.
 
 ---
 
-## The problem it solves
+## The problem
 
-If you've ever managed a Linux web server, you've probably wondered at some point whether a config file changed, whether something got added to a directory it shouldn't have, or whether a cron job is still outputting what it used to. Existing tools like Tripwire and OSSEC can answer those questions, but they're built for enterprise environments. Getting Tripwire running properly takes the better part of an hour and requires root. OSSEC is even heavier.
+Most sysadmins managing a Linux web server don't need an enterprise-grade intrusion detection suite. They need to know: did anything change? Was it supposed to? Tripwire answers that question, but it takes the better part of an hour to configure, requires root, and produces reports that take real expertise to read. OSSEC is even heavier.
 
-This tool does the same core job with a simple YAML config file and two commands. You point it at the files and directories you care about, it hashes them and saves a baseline, and on the next run it tells you what changed.
+This tool does the same core job with a YAML config file and two commands. You tell it what to watch, it hashes everything and stores a baseline, and on the next run it tells you exactly what changed.
 
 ---
 
 ## What gets detected
 
-Three change types are tracked:
+Three change types are classified:
 
-- **Added** - something that wasn't there before
-- **Deleted** - something that was there and isn't anymore
-- **Modified** - something that's still there but the content changed (detected via SHA-256 hash mismatch)
+- **Added** - something present now that wasn't in the baseline
+- **Deleted** - something in the baseline that's no longer there
+- **Modified** - content that exists in both but the SHA-256 hash no longer matches
 
-There's also support for monitoring command outputs, not just files. So if you want to know whether your open ports changed, or whether someone touched the crontab, you can monitor `ss -tuln` or `crontab -l` directly and it'll alert if the output differs from the baseline.
-
----
-
-## Why on-demand and not real-time
-
-The short answer is production servers. Running a persistent daemon that watches for filesystem events via inotify works fine on a development machine, but on a loaded web server it adds constant overhead and generates a lot of noise from normal activity. On-demand scanning is predictable, you can schedule it via cron at whatever frequency makes sense, and it doesn't sit in memory doing anything when you're not using it.
-
-Real-time monitoring under resource constraints is actually an open research problem and something I want to tackle in a future version properly, rather than just shipping a daemon that hammers the server.
+Beyond file system paths, the tool supports monitoring command outputs directly. If you want to know whether your open ports changed, or whether someone modified the crontab, you configure `ss -tuln` or `crontab -l` as a monitored target and it'll flag any difference from the baseline output. This turned out to be one of the more useful features in practice, since a lot of meaningful system state doesn't live in a single file.
 
 ---
 
-## Why SHA-256
+## Design decisions
 
-MD5 and SHA-1 both have known collision vulnerabilities at this point. SHA-256 is the sensible default: it's secure, well-audited, FIPS-approved, and supported natively in Python without any extra dependencies. BLAKE3 is faster but still hasn't been widely adopted in security tooling, so it's on the roadmap for a future version once it's more established.
+**SHA-256 over MD5 or SHA-1**: MD5 has been broken since 2004 and SHA-1 had its first practical collision in 2017. SHA-256 is secure, FIPS-approved, and supported natively in Python's standard library without extra dependencies. BLAKE3 is faster and looks promising, but hasn't been widely adopted in security tooling yet and lacks the audit history that matters in a security context. It's the obvious candidate for a future version.
+
+**On-demand scanning instead of a real-time daemon**: Event-driven approaches using inotify require a persistent process and tend to generate noise under normal server load. On-demand scanning is predictable, easy to schedule via cron, and has zero overhead between runs. The trade-off is deliberate. Continuous monitoring with acceptable resource overhead on production systems is actually an unsolved problem at scale, and it's one of the main directions this project is heading.
+
+**User space only**: Kernel-level monitoring frameworks like IMA offer stronger guarantees, but they require kernel modifications and elevated privileges, which introduces risks that often outweigh the benefits in standard web server deployments. Everything here runs as a normal user process.
+
+**Atomic baseline writes**: The baseline is written via a temporary file and `os.replace()` rather than writing directly to the target path. This means a crash or interruption mid-write can't leave a partially written baseline that silently corrupts future scans.
+
+**Self-verifying baseline**: A separate SHA-256 hash file is maintained for the baseline itself. Before any scan, the tool verifies the baseline hasn't been tampered with. Every baseline save is also appended to an append-only run log in JSONL format, giving you an audit trail of when baselines were created or updated.
+
+**Command sandboxing**: Commands configured for output monitoring are run with a restricted PATH and configurable timeout. stdout is captured and hashed; non-zero exit codes and timeouts are reported as job errors rather than silently failing.
 
 ---
 
 ## Architecture
 
-Six classes, each handling one job:
+The tool is structured around six classes, each with a single responsibility:
 
 ```
-ConfigManager        - reads and validates config.yaml
-FileSystemMonitor    - walks configured paths, collects hashes and metadata
-CommandOutputMonitor - runs commands in a sandboxed environment, hashes stdout
-BaselineManager      - saves and loads baselines with tamper detection
-Comparator           - diffs the current state against the stored baseline
-ReportManager        - writes JSON report and prints console summary
-Orchestrator         - ties everything together based on the CLI command
+ConfigManager        - parses and validates config.yaml at startup
+FileSystemMonitor    - walks configured paths, records hashes and metadata
+CommandOutputMonitor - runs commands safely, hashes stdout
+BaselineManager      - handles baseline persistence and integrity verification
+Comparator           - diffs current state against the stored baseline
+ReportManager        - writes JSON report and prints the console summary
+Orchestrator         - coordinates everything based on the CLI command
 ```
 
-Baselines are written atomically using a temp file and `os.replace()` so a crash mid-write can't corrupt your reference state. There's also a separate SHA-256 hash file for the baseline itself, so the tool can verify it hasn't been tampered with before running a scan.
+The modular structure makes components independently testable and means future extensions (different hash algorithms, new output formats, remote baseline storage) don't require touching unrelated code.
 
 ---
 
@@ -62,8 +64,8 @@ Baselines are written atomically using a temp file and `os.replace()` so a crash
 
 - Python 3.8+
 - PyYAML: `pip install pyyaml`
-- Linux (developed and tested on Fedora 42, should work on any standard distro)
-- No root needed for the tool itself; some commands you choose to monitor may need sudo
+- Linux (developed on Fedora 42, should work on any standard distro)
+- No root needed for the tool itself; some commands you choose to monitor may require sudo
 
 ---
 
@@ -113,7 +115,7 @@ Run a scan:
 python3 fim_tool.py scan --config config.yaml
 ```
 
-Console output looks like:
+Console output:
 
 ```
 Changes detected:
@@ -122,16 +124,17 @@ Changes detected:
 - [hash_mismatch]     job=open_ports obj=open_ports
 ```
 
-A full JSON report also gets written to `~/.change_detect/report.json`.
+A full JSON report is written to `~/.change_detect/report.json` for downstream processing or log shipping to a SIEM.
 
-Exit codes are scriptable:
-- `0` - nothing changed
+Exit codes follow a scriptable convention:
+
+- `0` - no changes detected
 - `1` - changes found
-- `2` - something went wrong (bad config, baseline integrity failure, etc.)
+- `2` - operational error (bad config, baseline integrity failure, etc.)
 
 ---
 
-## Running on a schedule
+## Scheduling with cron
 
 ```bash
 0 * * * * python3 /path/to/fim_tool.py scan --config /path/to/config.yaml >> /var/log/fim.log 2>&1
@@ -139,7 +142,7 @@ Exit codes are scriptable:
 
 ---
 
-## How it compares to Tripwire and OSSEC
+## Comparison with Tripwire and OSSEC
 
 | | linux-fim-tool | Tripwire | OSSEC |
 |---|---|---|---|
@@ -150,31 +153,34 @@ Exit codes are scriptable:
 | Command output monitoring | Yes | No | No |
 | User space only | Yes | No | No |
 
-*The tool itself doesn't need root. Specific commands you configure it to monitor might.
+*The tool itself doesn't need root. Commands you configure it to monitor might.
 
 ---
 
 ## Known limitations
 
-- Single-threaded, so scanning very large file systems is slower than it could be
-- Baseline is stored locally, so an attacker with access to the state directory could tamper with it. GPG signing and remote storage are on the roadmap.
-- Minor accuracy issues with permission change detection in edge cases around symlinks
+- Single-threaded hashing means performance on very large file systems is bounded. Parallel hashing is a straightforward future extension.
+- The baseline is stored locally. An attacker with write access to the state directory could tamper with it. GPG-signed baselines and remote storage are the obvious next steps.
+- Permission change detection has minor accuracy issues in edge cases around symlinks and special file types.
+- No real-time monitoring in this version.
 
 ---
 
 ## What's next
 
-- inotify-based near-real-time monitoring with proper resource budgeting
-- ML-based classification to distinguish suspicious changes from routine ones
-- GPG-signed baselines
-- Remote baseline storage and multi-host support
-- Kubernetes and container monitoring extension
+The two open problems this prototype deliberately doesn't solve are the main directions for future work:
+
+- **Continuous monitoring under resource constraints**: inotify-based detection with adaptive resource budgeting, so the tool can run on production systems without degrading performance
+- **Intelligent change classification**: lightweight ML-based anomaly detection to distinguish suspicious changes from routine administrative activity, rather than leaving all triage to the sysadmin
+- GPG-signed baselines and remote baseline storage
+- Multi-host deployment with centralised reporting
+- Container and Kubernetes pod monitoring
 
 ---
 
 ## Research context
 
-Developed as part of MSc Computing research at Bangor University (2025-26), supervised by Dr Cameron Gray. The dissertation compared this tool against Tripwire and OSSEC across small, medium, and large-scale environments. The core finding was that a user-space, on-demand approach is genuinely viable for Linux web server environments, with the trade-offs around real-time monitoring being the main area for future work.
+Built as an MSc individual project at Bangor University (2025-26), supervised by Dr Cameron Gray. The dissertation benchmarked this tool against Tripwire and OSSEC across three scale scenarios (100, 5,000, and 50,000 files) and evaluated detection accuracy, resource usage, and usability. The core finding was that a user-space, on-demand approach is practically viable for Linux web server environments, and that the two unsolved problems above are the right targets for follow-on research.
 
 ---
 
